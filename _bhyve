@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-#  $Id: _bhyve,v 1.96 2018/05/07 00:51:42 minmin Exp $
+#  $Id: _bhyve,v 1.104 2020/05/02 13:30:56 minmin Exp $
 #
 #  BHyVe での Grubを使うOSのインストール/起動スクリプト
 #  プログラム名
@@ -20,17 +20,25 @@ export PATH=/usr/local/bin:/usr/local/sbin:/bin:/usr/bin:/sbin:/usr/sbin
 do_sudo=sudo		# sudo コマンド
 do_daemon=daemon	# daemon コマンド
 
+# doasがインストールしてあればsudoではなくdoasを使う
+if type doas >/dev/null 2>&1; then
+	do_sudo=doas	# replace from sudo to doas
+fi
+
 zvol_opt='-o compression=off -o volmode=dev -o volblocksize=4k'	# ZFS Volumeのプロパティ
 
 progname=_bhyve		# このスクリプトのファイル名
 
 # コマンド一覧
 commands=' boot ttyboot clean console install resources shutdown '
-commands_zfs=' snapshot rollback '
+commands_zfs=' clone history snapshot rollback '
 
 #  デフォルトリソース
-cpu=1			# VMのデフォルトのCPU数
-mem=256M		# VMのデフォルトのメモリサイズ
+cpu=$(($(sysctl -n hw.ncpu) / 2)) # VMのデフォルトのCPU数(コア数の半分)
+[ ${cpu} -eq 0 ] && cpu=1
+mem=512M		# VMのデフォルトのメモリサイズ
+
+snapshot_item='name,volsize,used,refer'	# *-snapshotの表示項目
 
 # ------------------------------------------------------------
 
@@ -55,7 +63,7 @@ mem=256M		# VMのデフォルトのメモリサイズ
 #  ifopt: 追加のNetwork IF
 #
 __config_system () {
-	local _id _mem _cpu _if0 _hd0 _cd0 _zvol _hdopt _netopt
+	local _id _mem _cpu _if0 _hd0 _cd0 _zvol _hdopt _netopt _root
 
 	eval _id=\$${system}_id
 	if [ -z "${_id}" ]
@@ -70,9 +78,11 @@ __config_system () {
 	eval _zvol=\$${system}_zvol
 	eval _if0=\$${system}_if0
 	eval _hd0=\$${system}_hd0
+	eval _root=\$${system}_gpt
 
 	mem=${_mem:-${mem}}
 	cpu=${_cpu:-${cpu}}
+	root=${_root:-msdos1}
 
 	con=/dev/nmdm${_id}A
 	if0=${_if0:-tap${_id}}
@@ -205,7 +215,7 @@ __make_disk () {
 		echo "*** ${hd0} already exist" 1>&2
 	elif [ ${zfs} = YES ]; then
 		${do_sudo} zfs create -V ${V_size} ${sparse} ${zvol_opt} ${zvol} || exit
-		zfs list -o name,volsize,used ${zvol}
+		zfs list -o ${snapshot_item} ${zvol}
 		echo
 	else
 		${do_sudo} truncate -s ${V_size} ${hd0}
@@ -301,7 +311,7 @@ __destroy_tapif () {
 __clean_vm () {
 	local _id _optif _bridge
 
-	if [ ${do_sudo} = sudo ] && pgrep -qxf "bhyve: ${system}"
+	if [ ${do_sudo} != echo ] && pgrep -qxf "bhyve: ${system}"
 	then
 		echo "*** ${system}: running" 1>&2
 		exit 2
@@ -339,7 +349,7 @@ __shutdown_vm () {
 
 	test ${q_flag} || echo -n "Waiting for shutdown ${system} " 1>&2
 
-	if [ ${do_sudo} = sudo ]; then
+	if [ ${do_sudo} != echo ]; then
 		_i=0
 		while pgrep -qxf "bhyve: ${system}"
 		do
@@ -381,7 +391,7 @@ __rollback_volume () {
 }
 
 __snapshot_volume () {
-	local _keywords _list_opt='name,volsize,used,refer'
+	local _keywords
 
 	if [ -z "${zvol}" ]; then
 		echo "*** ${system}: No zfs volume" 1>&2
@@ -389,7 +399,7 @@ __snapshot_volume () {
 	fi
 
 	if [ $# -eq 0 ]; then
-		zfs list -d 1 -o ${_list_opt} -t all ${zvol}
+		zfs list -d 1 -o ${snapshot_item} -t all ${zvol}
 		return
 	fi
 
@@ -401,7 +411,93 @@ __snapshot_volume () {
 
 	_keywords=$(echo $* | tr ' ' _)
 	${do_sudo} zfs snapshot $zvol@_`date +%Y%m%d%H%M`-${_keywords}
-	zfs list -d 1 -o ${_list_opt} -t all ${zvol}
+	zfs list -d 1 -o ${snapshot_item} -t all ${zvol}
+}
+
+__history_volume () {
+	local _snap _count=0
+	local _vol=${volroot}/${1}
+
+	if [ -z "${1}" ]; then
+		echo "*** ${system}: No zfs volume" 1>&2
+		return 2
+	fi
+
+	zfs list -H -o name -r -t snapshot "${_vol}" | while read _snap; do 
+		case ${_snap} in
+		*@_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-*_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9])
+			eval $(echo ${_snap} | sed 's/^.*@_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-\(.*\)\(_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\)$/local _sys=\1 _time=\2/p')
+			__history_volume ${_sys} ${_time}
+			;;
+		esac
+		[ ${_count} -eq 0 ] && echo ${_vol}
+		echo ${_snap}
+		if [ ! -z ${2} ]; then
+			if echo ${_snap} | fgrep -q ${1}@${2}- ; then
+				break
+			fi
+		fi
+		_count=$((_count + 1))
+	done
+}
+
+__clone_volume () {
+	local _now=$(date +%Y%m%d%H%M)
+	local _vm _bsnap _btime
+
+	if [ -z "${zvol}" ]; then
+		echo "*** ${system}: No zfs volume" 1>&2
+		return 2
+	fi
+
+	case $# in
+
+	0)	echo "Usage: ${progname} [snapshot] New_VM [New_VM]" 1>&2
+		return 2 ;;
+
+	1)	if pgrep -qxf "bhyve: ${system}"; then
+			echo "*** ${system}: running" 1>&2
+			return 2
+		fi
+		if zfs list -H -o name ${volroot}/${1} >/dev/null 2>&1; then
+			echo "*** ${1}: already exist!" 1>&2
+			return 2
+		fi
+		_bsnap=_${_now}-clone_base
+		${do_sudo} zfs snapshot ${zvol}@${_bsnap} || exit
+		_btime=_${_now}
+		;;
+
+	*)	case $1 in	
+
+		_[1-9]*) _bsnap="$1"; shift
+			_btime=${_bsnap%%-*}
+			if ! zfs list "${zvol}@${_bsnap}" > /dev/null 2>&1; then
+				echo "*** ${zvol}@${_bsnap}: No such snapshot" 1>&2
+				return 2
+			fi
+			;;
+
+		*)	if pgrep -qxf "bhyve: ${system}"; then
+				echo "*** ${system}: running" 1>&2
+				return 2
+			fi
+			if zfs list -H -o name ${volroot}/${1} >/dev/null 2>&1; then
+				echo "*** ${1}: already exist!" 1>&2
+				return 2
+			fi
+			_bsnap=_${_now}-clone_base
+			${do_sudo} zfs snapshot ${zvol}@${_bsnap} || exit
+			_btime=_${_now}
+			;;
+		esac
+	esac
+
+	for _vm in "$@"; do
+		${do_sudo} zfs clone ${zvol}@${_bsnap} ${volroot}/${_vm}
+		${do_sudo} zfs snapshot ${volroot}/${_vm}@_${_now}-${system}${_btime}
+		${do_sudo} zfs list -d 1 -o ${snapshot_item} -t all ${volroot}/${_vm}
+	done
 }
 
 __do_bhyve () {
@@ -454,9 +550,9 @@ __grub_boot () {
 	# Boot用の Grubの起動
 	#
 	if [ x"${grub_boot_cmd}" = x -o x"${p_flag}" = xYES ]; then
-		${do_sudo} grub-bhyve -m ${map} -r hd0,msdos1 -M ${mem} ${system}
+		${do_sudo} grub-bhyve -m ${map} -r hd0,${root} -M ${mem} ${system}
 	else
-		${do_sudo} grub-bhyve -m ${map} -r hd0,msdos1 -M ${mem} ${system} <<- EOT
+		${do_sudo} grub-bhyve -m ${map} -r hd0,${root} -M ${mem} ${system} <<- EOT
 		${grub_boot_cmd}
 		boot
 		EOT
@@ -558,8 +654,10 @@ install)	con=stdio install=YES cdopt="-s 4:0,ahci-cd,${cd0}"
 
 console)	__connect_console	; exit ;;
 clean)		__clean_vm		; exit ;;
+clone)		__clone_volume "$@"	; exit ;;
+history)	__history_volume ${system} ; exit ;;
 resources)	__print_resources	; exit ;;
-rollback)	__rollback_volume "$@"  ; exit ;;
+rollback)	__rollback_volume "$@"	; exit ;;
 shutdown)	__shutdown_vm		; exit ;;
 snapshot)	__snapshot_volume "$@"	; exit ;;
 *)		echo "*** ${cmd}: Unknown Commmand" 1>&2 ; exit 2 ;;
