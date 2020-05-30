@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-#  $Id: _bhyve,v 1.104 2020/05/02 13:30:56 minmin Exp $
+#  $Id: _bhyve,v 1.105 2020/05/27 15:07:12 minmin Exp $
 #
 #  BHyVe での Grubを使うOSのインストール/起動スクリプト
 #  プログラム名
@@ -501,7 +501,7 @@ __clone_volume () {
 }
 
 __do_bhyve () {
-	${do_exec} ${do_sudo} ${do_daemon} bhyve -A -H -P \
+	${do_exec} ${do_sudo} ${do_daemon} bhyve -u -A -H -P \
 		-c ${cpu} \
 		-m ${mem} \
 		-l com1,${con} \
