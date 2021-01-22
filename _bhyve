@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-#  $Id: _bhyve,v 1.105 2020/05/27 15:07:12 minmin Exp $
+#  $Id: _bhyve,v 1.112 2021/01/22 01:31:52 minmin Exp $
 #
 #  BHyVe での Grubを使うOSのインストール/起動スクリプト
 #  プログラム名
@@ -26,6 +26,7 @@ if type doas >/dev/null 2>&1; then
 fi
 
 zvol_opt='-o compression=off -o volmode=dev -o volblocksize=4k'	# ZFS Volumeのプロパティ
+zvol_opt='-o volmode=dev -o volblocksize=4k'	# ZFS Volumeのプロパティ
 
 progname=_bhyve		# このスクリプトのファイル名
 
@@ -105,7 +106,7 @@ __config_system () {
 
 	_id=0
 	eval _netopt=\$${system}_if${_id}
-	while [ ! -z "${_netopt}" ]
+	while [ -n "${_netopt}" ]
 	do
 		ifopt="${ifopt} -s 2:${_id},virtio-net,${_netopt}"
 
@@ -119,7 +120,7 @@ __config_system () {
 
 	_id=0
 	eval _hdopt=\$${system}_hd${_id}
-	while [ ! -z "${_hdopt}" ]
+	while [ -n "${_hdopt}" ]
 	do
 		eval hd${_id}=${_hdopt}
 		hdopt="${hdopt} -s 3:${_id},virtio-blk,${_hdopt}"
@@ -196,7 +197,7 @@ __init_systems () {
 
 	_id=0
 	eval _if=\${if${_id}}
-	while [ ! -z "${_if}" ]
+	while [ -n "${_if}" ]
 	do
 		eval __check_and_set_bridge \${if${_id}_bridge} ${_if}
 		_id=$((_id + 1))
@@ -230,7 +231,7 @@ __check_resouces() {
 
 	_id=0
 	eval _hd=\${hd${_id}}
-	while [ ! -z "${_hd}" ]
+	while [ -n "${_hd}" ]
 	do
 		if [ ! -e "${_hd}" ]; then
 			echo "*** ${_hd} not found." 1>&2
@@ -277,7 +278,7 @@ __print_resources () {
 
 	_id=0
 	eval _if=\${if${_id}}
-	while [ ! -z "${_if}" ]
+	while [ -n "${_if}" ]
 	do
 		eval echo if${_id}=${_if} if${_id}_bridge=\${if${_id}_bridge}
 		_id=$((_id + 1))
@@ -286,18 +287,18 @@ __print_resources () {
 
 	_id=0
 	eval _opt=\$hd${_id}
-	while [ ! -z "${_opt}" ]
+	while [ -n "${_opt}" ]
 	do
 		echo hd${_id}=${_opt}
 		_id=$((_id + 1))
 		eval _opt=\$hd${_id}
 	done
 
-	[ ! -z "${ifopt}" ] && echo ifopt='"'$ifopt'"'
-	[ ! -z "${hdopt}" ] && echo hdopt='"'$hdopt'"'
-	[ ! -z "${cdopt}" ] && echo cdopt='"'$cdopt'"'
-	[ ! -z "${grub_inst_cmd}" ] && echo grub_inst_cmd='"'$grub_inst_cmd'"'
-	[ ! -z "${grub_boot_cmd}" ] && echo grub_boot_cmd='"'$grub_boot_cmd'"'
+	[ -n "${ifopt}" ] && echo ifopt='"'$ifopt'"'
+	[ -n "${hdopt}" ] && echo hdopt='"'$hdopt'"'
+	[ -n "${cdopt}" ] && echo cdopt='"'$cdopt'"'
+	[ -n "${grub_inst_cmd}" ] && echo grub_inst_cmd='"'$grub_inst_cmd'"'
+	[ -n "${grub_boot_cmd}" ] && echo grub_boot_cmd='"'$grub_boot_cmd'"'
 }
 
 __destroy_tapif () {
@@ -324,7 +325,7 @@ __clean_vm () {
 
 	_id=0
 	eval _optif=\${if${_id}}
-	while [ ! -z "${_optif}" ]
+	while [ -n "${_optif}" ]
 	do
 		eval __destroy_tapif \${if${_id}_bridge} ${_optif}
 		_id=$((_id + 1))
@@ -423,7 +424,7 @@ __history_volume () {
 		return 2
 	fi
 
-	zfs list -H -o name -r -t snapshot "${_vol}" | while read _snap; do 
+	zfs list -H -o name -r -t snapshot "${_vol}" | while read _snap; do
 		case ${_snap} in
 		*@_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-*_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9])
 			eval $(echo ${_snap} | sed 's/^.*@_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-\(.*\)\(_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\)$/local _sys=\1 _time=\2/p')
@@ -432,7 +433,7 @@ __history_volume () {
 		esac
 		[ ${_count} -eq 0 ] && echo ${_vol}
 		echo ${_snap}
-		if [ ! -z ${2} ]; then
+		if [ -n ${2} ]; then
 			if echo ${_snap} | fgrep -q ${1}@${2}- ; then
 				break
 			fi
@@ -576,6 +577,46 @@ __freebsd_boot () {
 	__do_bhyve
 }
 
+# ----- Utility tools ------
+
+__util_id () {
+	grep '^[^#].*_id=[0-9]' ${configs} |
+		sort -n -t = +1 | sed -e 's/\(.*\)_id=\(.*\)/\2	\1/'
+}
+
+
+__get_mem_and_cpu () {
+	(
+		eval $(~/bin/bhyve/$1-resources)
+		echo $cpu $mem
+	)
+}
+
+__show_bhyve_detail () {
+	echo
+	pgrep -fl bhyve: |
+	while read pid dummy vm
+	do
+		printf '%-5d  %-12s  %d  %s\n' ${pid} ${vm} $(__get_mem_and_cpu ${vm})
+	done | sort +1
+}
+
+__util_stat () {
+
+	while getopts 'a' cmd_arg
+	do
+		case "${cmd_arg}" in
+		a)      a_flag=YES ;;
+		esac
+	done >&2
+
+	pgrep -d, bhyve >/dev/null 2>&1 && { ps -u -p $(pgrep -d, bhyve); echo; }
+
+	[ -d /dev/vmm ] && ls -l /dev/vmm/*
+
+	[ -n "${a_flag}" ] && __show_bhyve_detail
+}
+
 # ----- ここからメイン -----
 
 prog=${0##*/}
@@ -602,6 +643,13 @@ if [ -z "${configs}" ]; then
 	echo "${prog}: No config: ${progname}-${host}.conf nor ${progname}.conf" >&2
 	exit 1
 fi
+
+case ${prog} in
+
+bhyve-id)	__util_id ; exit ;;
+bhyve-stat)	__util_stat "$@"; exit ;;
+
+esac
 
 # check ZFS system
 #
