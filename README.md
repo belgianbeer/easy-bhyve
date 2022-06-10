@@ -1,4 +1,4 @@
-# _bhyve
+# easy-bhyve
 BhyVe assistant script. 
 
 This is useful for bhyve.

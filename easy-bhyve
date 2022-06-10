@@ -1,8 +1,7 @@
 #!/bin/sh
 #
-#  $Id: _bhyve,v 1.112 2021/01/22 01:31:52 minmin Exp $
+#  easy-bhyve - Utility tools for easy use to bhyve
 #
-#  BHyVe での Grubを使うOSのインストール/起動スクリプト
 #  プログラム名
 #   システム名-install		bhyveへのインストール
 #   システム名-boot		インストール済みシステムの起動
@@ -11,65 +10,110 @@
 #   システム名-resources	リソースの表示
 #   システム名-shutodnw		VMMのシャットダウン
 #   システム名-clean		VMMのクリア
+#  ZFS専用のコマンド
 #   システム名-snapshot	word	zvolへのsnapshot
 #   システム名-rollback		最後のsnapshotへのrollback
+#   システム名-clone		VMのclone 
+#   システム名-history		VMのcloneやsnapshotの履歴確認
+#
+#  Copyright (c) 2016 - 2021 Masato Minda
+#  All rights reserved.
+#
+#  Redistribution and use in source and binary forms, with or without
+#  modification, are permitted provided that the following conditions
+#  are met:
+#  1. Redistributions of source code must retain the above copyright
+#     notice, this list of conditions and the following disclaimer.
+#  2. Redistributions in binary form must reproduce the above copyright
+#     notice, this list of conditions and the following disclaimer in the
+#     documentation and/or other materials provided with the distribution.
+#
+#  THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+#  ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+#  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+#  ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+#  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+#  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+#  OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+#  HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+#  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+#  OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+#  SUCH DAMAGE.
+#
+#  $Id: easy-bhyve,v 1.114 2022/03/31 06:19:05 minmin Exp $
 #
 
 export PATH=/usr/local/bin:/usr/local/sbin:/bin:/usr/bin:/sbin:/usr/sbin
 
-do_sudo=sudo		# sudo コマンド
-do_daemon=daemon	# daemon コマンド
+__init_defaults () {
+	: ${ebprog:=easy-bhyve}
+	: ${ebprog_setup:=${ebprog}}
+	: ${ebprog_id:=${ebprog}-id}
+	: ${ebprog_stat:=${ebprog}-stat}
+	: ${ebdir:=ebhyve}
 
-# doasがインストールしてあればsudoではなくdoasを使う
-if type doas >/dev/null 2>&1; then
-	do_sudo=doas	# replace from sudo to doas
-fi
+	prog=${0##*/}
+	prog_path=${0}
+	prog_dir=${0%/*}
 
-zvol_opt='-o compression=off -o volmode=dev -o volblocksize=4k'	# ZFS Volumeのプロパティ
-zvol_opt='-o volmode=dev -o volblocksize=4k'	# ZFS Volumeのプロパティ
+	system=${prog%-*}	#  SYSTEM-command の SYSTEM
+	cmd=${prog##*-}		#                    command
+	hostname=$(hostname)
+	host=${hostname%%.*}	# host名から '.' 以降の除いた名前
 
-progname=_bhyve		# このスクリプトのファイル名
+	do_sudo=sudo		# sudo コマンド
+	do_daemon=daemon	# daemon コマンド
 
-# コマンド一覧
-commands=' boot ttyboot clean console install resources shutdown '
-commands_zfs=' clone history snapshot rollback '
+	# doasがインストールしてあればsudoではなくdoasを使う
+	if type doas >/dev/null 2>&1; then
+		do_sudo=doas	# replace from sudo to doas
+	fi
 
-#  デフォルトリソース
-cpu=$(($(sysctl -n hw.ncpu) / 2)) # VMのデフォルトのCPU数(コア数の半分)
-[ ${cpu} -eq 0 ] && cpu=1
-mem=512M		# VMのデフォルトのメモリサイズ
+	# コマンド一覧
+	commands=' boot ttyboot clean console install resources shutdown '
+	commands_zfs=' clone history snapshot rollback '
 
-snapshot_item='name,volsize,used,refer'	# *-snapshotの表示項目
+	#  デフォルトリソース
+	cpu=$(( ($(sysctl -n hw.ncpu) + 1) / 2))	# VMのデフォルトのCPU数(コア数の半分)
+	mem=512M				# VMのデフォルトのメモリサイズ
 
-# ------------------------------------------------------------
+	snapshot_item='name,volsize,used,refer'		# *-snapshotの表示項目
+	zvol_opt='-o volmode=dev -o volblocksize=4k'	# ZFS Volumeのプロパティ
+}
+
+__read_config () {
+
+	if [ -f ${prog_dir}/${ebprog}.conf ]; then
+		. ${prog_dir}/${ebprog}.conf
+		configs=${prog_dir}/${ebprog}.conf
+	fi
+
+	if [ -f ${prog_dir}/${ebprog}-${host}.conf ]; then
+		. ${prog_dir}/${ebprog}-${host}.conf
+		configs="${configs} ${prog_dir}/${ebprog}-${host}.conf"
+	fi
+
+	if [ -z "${configs}" ]; then
+		echo "${prog}: No config: ${ebprog}-${host}.conf nor ${ebprog}.conf" >&2
+		exit 1
+	fi
+}
 
 #  VMのリソース割り当て
 #
-#   新たなVMを増やす場合
-#     case文のエントリーを増やす
-#     _id に新規の番号を割り当てる
-#     適当なISOイメージを割り当てる
-#
-#  con: consoleが接続されるヌルモデムのデバイス名 ex. /dev/nmdm0A
 #  if0:  tap IFの名前   ex tap0
 #        tapX と /dev/nmdmXA の Xの番号は一致し、_id に設定した値を使う
 #  zvol: VM用 zfs volume
 #	 システム名とZFSのvolume名は同じ名前であることを前提としている
 #  hd0:  システムディスク 通常 /dev/zvol/${volroot}/${system}
 #  cd0:  インストール用のISOイメージ
-#  freebsd:  ターゲットOSがfreebsdならばYES
 #  grub_inst_cmd: (optional) grub-bhyveでinstallに必要なコマンド列
 #  grub_boot_cmd: (optional) grub-bhyveでbootに必要なコマンド列
-#  hdopt: 追加のHDD
-#  ifopt: 追加のNetwork IF
 #
 __config_system () {
-	local _id _mem _cpu _if0 _hd0 _cd0 _zvol _hdopt _netopt _root
-
 	eval _id=\$${system}_id
-	if [ -z "${_id}" ]
-	then
-		echo "*** ${system} is bad name" 1>&2
+	if [ -z "${_id}" ]; then
+		echo "*** ${system} is bad name" >&2
 		exit 1
 	fi
 
@@ -79,11 +123,9 @@ __config_system () {
 	eval _zvol=\$${system}_zvol
 	eval _if0=\$${system}_if0
 	eval _hd0=\$${system}_hd0
-	eval _root=\$${system}_gpt
 
 	mem=${_mem:-${mem}}
 	cpu=${_cpu:-${cpu}}
-	root=${_root:-msdos1}
 
 	con=/dev/nmdm${_id}A
 	if0=${_if0:-tap${_id}}
@@ -100,9 +142,13 @@ __config_system () {
 	[ -z "${_if0}" ] && eval ${system}_if0=${if0}
 	[ -z "${_hd0}" ] && eval ${system}_hd0=${hd0}
 
-	eval freebsd=\$${system}_freebsd
+	eval grub_root=\$${system}_grub_root
 	eval grub_inst_cmd=\$${system}_grub_inst
 	eval grub_boot_cmd=\$${system}_grub_boot
+
+	if [ -z "${grub_root}" -a -z "${grub_inst_cmd}" -a -z "${grub_boot_cmd}" ]; then
+		bhyveload=YES
+	fi
 
 	_id=0
 	eval _netopt=\$${system}_if${_id}
@@ -127,29 +173,31 @@ __config_system () {
 		_id=$((_id + 1))
 		eval _hdopt=\$${system}_hd${_id}
 	done
-
 }
 
 __make_command_links () {
 	local _systems _sys _cmd
 
-	# _systems=$(sed -n '/^\([a-zA-Z0-9][a-zA-Z0-9]*\)_id=[0-9][0-9]*/s//\1/p' ${configs})
 	_systems=$(sed -n '/^[[:space:]]*\([[:alpha:]][[:alpha:][:digit:]]*\)_id=[[:digit:]][[:digit:]]*/s//\1/p' ${configs})
 
 	if [ x"${_systems}" = x ]
 	then
-		echo 'No bhyve configuration' 1>&2
+		echo 'No bhyve configuration' >&2
 		exit 2
 	fi
 
 	[ ${zfs} = YES ] && commands="$commands $commands_zfs"
 
-	mkdir -p ${prog_dir}/bhyve || exit
+	mkdir -p ${prog_dir}/${ebdir} || exit
 
-	cd ${prog_dir}/bhyve || exit
-	find . -type l -delete
-	[ -f ../${progname}.conf ] && ln -sf ../${progname}.conf
-	[ -f ../${progname}-${host}.conf ] && ln -sf ../${progname}-${host}.conf
+	cd ${prog_dir}/${ebdir} || exit
+	find . -type l -delete	# remove synbolic-links
+
+	[ -f ../${ebprog}.conf ] && ln -sf ../${ebprog}.conf
+	[ -f ../${ebprog}-${host}.conf ] && ln -sf ../${ebprog}-${host}.conf
+	ln -sf ../${prog} ${ebprog_id} || exit
+	ln -sf ../${prog} ${ebprog_stat} || exit
+
 	for _sys in ${_systems}
 	do
 		for _cmd in $commands
@@ -213,7 +261,7 @@ __check_running () {
 #  ディスクイメージの作成 (HOGE-ressouces 時)
 __make_disk () {
 	if [ -e "${hd0}" ]; then
-		echo "*** ${hd0} already exist" 1>&2
+		echo "*** ${hd0} already exist" >&2
 	elif [ ${zfs} = YES ]; then
 		${do_sudo} zfs create -V ${V_size} ${sparse} ${zvol_opt} ${zvol} || exit
 		zfs list -o ${snapshot_item} ${zvol}
@@ -234,7 +282,7 @@ __check_resouces() {
 	while [ -n "${_hd}" ]
 	do
 		if [ ! -e "${_hd}" ]; then
-			echo "*** ${_hd} not found." 1>&2
+			echo "*** ${_hd} not found." >&2
 			_badconfig=YES
 		fi
 		_id=$((_id + 1))
@@ -242,7 +290,7 @@ __check_resouces() {
 	done
 
 	if [ x"${install}" = xYES -a ! -e "${cd0}" ]; then
-		echo "*** ${cd0} not found." 1>&2
+		echo "*** ${cd0} not found." >&2
 		_badconfig=YES
 	fi
 
@@ -297,6 +345,7 @@ __print_resources () {
 	[ -n "${ifopt}" ] && echo ifopt='"'$ifopt'"'
 	[ -n "${hdopt}" ] && echo hdopt='"'$hdopt'"'
 	[ -n "${cdopt}" ] && echo cdopt='"'$cdopt'"'
+	[ -n "${grub_root}" ] && echo grub_root='"'$grub_root'"'
 	[ -n "${grub_inst_cmd}" ] && echo grub_inst_cmd='"'$grub_inst_cmd'"'
 	[ -n "${grub_boot_cmd}" ] && echo grub_boot_cmd='"'$grub_boot_cmd'"'
 }
@@ -314,7 +363,7 @@ __clean_vm () {
 
 	if [ ${do_sudo} != echo ] && pgrep -qxf "bhyve: ${system}"
 	then
-		echo "*** ${system}: running" 1>&2
+		echo "*** ${system}: running" >&2
 		exit 2
 	fi
 
@@ -338,7 +387,7 @@ __shutdown_vm () {
 
 	if ! _pid=$(pgrep -xf "bhyve: ${system}")
 	then
-		echo "*** ${system} is not running" 1>&2
+		echo "*** ${system} is not running" >&2
 		exit 2
 	fi
 
@@ -348,7 +397,7 @@ __shutdown_vm () {
 		${do_sudo} kill ${_pid}
 	fi
 
-	test ${q_flag} || echo -n "Waiting for shutdown ${system} " 1>&2
+	test ${q_flag} || echo -n "Waiting for shutdown ${system} " >&2
 
 	if [ ${do_sudo} != echo ]; then
 		_i=0
@@ -357,34 +406,34 @@ __shutdown_vm () {
 			_i=$((_i + 1))
 			if [ ${_i} -ge 120 ]	# shutdownを1分までは待つ
 			then
-				echo "**** ${system}: can not shutdown!" 1>&2
+				echo "**** ${system}: can not shutdown!" >&2
 				exit 2
 			fi
 			sleep 1
-			test ${q_flag} || echo -n '.' 1>&2
+			test ${q_flag} || echo -n '.' >&2
 		done
 	fi
 	__clean_vm
-	test ${q_flag} || echo " Done." 1>&2
+	test ${q_flag} || echo " Done." >&2
 }
 
 __rollback_volume () {
 	local _rb
 
 	if [ -z "${zvol}" ]; then
-		echo "*** ${system}: No ZFS volume" 1>&2
+		echo "*** ${system}: No ZFS volume" >&2
 		return 2
 	fi
 	if [ $# = 1 ]; then
 		_rb=${zvol}@${1}
 		if list -H -o name ${_rb} >/dev/null 2>&1 ; then
-			echo "*** ${system}: ${_rb}: No such snapshot" 1>&2
+			echo "*** ${system}: ${_rb}: No such snapshot" >&2
 			return 2
 		fi
 	else
 		_rb=$(zfs list -d 1 -H -o name -t snapshot ${zvol} | tail -1)
 		if [ -z "${_rb}" ]; then
-			echo "*** ${system}: ${zvol} has no snapshot" 1>&2
+			echo "*** ${system}: ${zvol} has no snapshot" >&2
 			return 2
 		fi
 	fi
@@ -395,7 +444,7 @@ __snapshot_volume () {
 	local _keywords
 
 	if [ -z "${zvol}" ]; then
-		echo "*** ${system}: No zfs volume" 1>&2
+		echo "*** ${system}: No zfs volume" >&2
 		return 2
 	fi
 
@@ -406,7 +455,7 @@ __snapshot_volume () {
 
 	if pgrep -qxf "bhyve: ${system}"
 	then
-		echo "*** ${system}: running" 1>&2
+		echo "*** ${system}: running" >&2
 		return 2
 	fi
 
@@ -420,7 +469,7 @@ __history_volume () {
 	local _vol=${volroot}/${1}
 
 	if [ -z "${1}" ]; then
-		echo "*** ${system}: No zfs volume" 1>&2
+		echo "*** ${system}: No zfs volume" >&2
 		return 2
 	fi
 
@@ -447,21 +496,21 @@ __clone_volume () {
 	local _vm _bsnap _btime
 
 	if [ -z "${zvol}" ]; then
-		echo "*** ${system}: No zfs volume" 1>&2
+		echo "*** ${system}: No zfs volume" >&2
 		return 2
 	fi
 
 	case $# in
 
-	0)	echo "Usage: ${progname} [snapshot] New_VM [New_VM]" 1>&2
+	0)	echo "Usage: ${ebprog} [snapshot] New_VM [New_VM]" >&2
 		return 2 ;;
 
 	1)	if pgrep -qxf "bhyve: ${system}"; then
-			echo "*** ${system}: running" 1>&2
+			echo "*** ${system}: running" >&2
 			return 2
 		fi
 		if zfs list -H -o name ${volroot}/${1} >/dev/null 2>&1; then
-			echo "*** ${1}: already exist!" 1>&2
+			echo "*** ${1}: already exist!" >&2
 			return 2
 		fi
 		_bsnap=_${_now}-clone_base
@@ -474,17 +523,17 @@ __clone_volume () {
 		_[1-9]*) _bsnap="$1"; shift
 			_btime=${_bsnap%%-*}
 			if ! zfs list "${zvol}@${_bsnap}" > /dev/null 2>&1; then
-				echo "*** ${zvol}@${_bsnap}: No such snapshot" 1>&2
+				echo "*** ${zvol}@${_bsnap}: No such snapshot" >&2
 				return 2
 			fi
 			;;
 
 		*)	if pgrep -qxf "bhyve: ${system}"; then
-				echo "*** ${system}: running" 1>&2
+				echo "*** ${system}: running" >&2
 				return 2
 			fi
 			if zfs list -H -o name ${volroot}/${1} >/dev/null 2>&1; then
-				echo "*** ${1}: already exist!" 1>&2
+				echo "*** ${1}: already exist!" >&2
 				return 2
 			fi
 			_bsnap=_${_now}-clone_base
@@ -523,6 +572,10 @@ __grub_install () {
 	(cd0) ${cd0}
 	EOT
 
+	# 確認のためのmapファイルのバックアップ
+	#
+	# cp ${map} /tmp/_mapfile-$$
+
 	# install用のGrubの起動
 	if [ x"${grub_inst_cmd}" = x ]; then
 		${do_sudo} grub-bhyve -m ${map} -r cd0 -M ${mem} ${system}
@@ -548,12 +601,16 @@ __grub_boot () {
 	(hd0) ${hd0}
 	EOT
 
+	# 確認のためのmapファイルのバックアップ
+	#
+	# cp ${map} /tmp/_mapfile-$$
+
 	# Boot用の Grubの起動
 	#
 	if [ x"${grub_boot_cmd}" = x -o x"${p_flag}" = xYES ]; then
-		${do_sudo} grub-bhyve -m ${map} -r hd0,${root} -M ${mem} ${system}
+		${do_sudo} grub-bhyve -m ${map} -r hd0,${grub_root} -M ${mem} ${system}
 	else
-		${do_sudo} grub-bhyve -m ${map} -r hd0,${root} -M ${mem} ${system} <<- EOT
+		${do_sudo} grub-bhyve -m ${map} -r hd0,${grub_root} -M ${mem} ${system} <<- EOT
 		${grub_boot_cmd}
 		boot
 		EOT
@@ -567,12 +624,12 @@ __grub_boot () {
 	return ${_st}
 }
 
-__freebsd_install () {
+__bhyveload_install () {
 	${do_sudo} bhyveload -c stdio -m ${mem} -d ${cd0} ${system} &&
 	__do_bhyve
 }
 
-__freebsd_boot () {
+__bhyveload_boot () {
 	${do_sudo} bhyveload -c stdio -m ${mem} -d ${hd0} ${system} &&
 	__do_bhyve
 }
@@ -580,14 +637,14 @@ __freebsd_boot () {
 # ----- Utility tools ------
 
 __util_id () {
-	grep '^[^#].*_id=[0-9]' ${configs} |
+	grep -h '^[^#].*_id=[0-9]' ${configs} |
 		sort -n -t = +1 | sed -e 's/\(.*\)_id=\(.*\)/\2	\1/'
 }
 
 
 __get_mem_and_cpu () {
 	(
-		eval $(~/bin/bhyve/$1-resources)
+		eval $(${prog_dir}/${1}-resources)
 		echo $cpu $mem
 	)
 }
@@ -602,14 +659,6 @@ __show_bhyve_detail () {
 }
 
 __util_stat () {
-
-	while getopts 'a' cmd_arg
-	do
-		case "${cmd_arg}" in
-		a)      a_flag=YES ;;
-		esac
-	done >&2
-
 	pgrep -d, bhyve >/dev/null 2>&1 && { ps -u -p $(pgrep -d, bhyve); echo; }
 
 	[ -d /dev/vmm ] && ls -l /dev/vmm/*
@@ -619,53 +668,11 @@ __util_stat () {
 
 # ----- ここからメイン -----
 
-prog=${0##*/}
-prog_dir=${0%/*}
-system=${prog%-*}	#  SYSTEM-command の SYSTEM
-cmd=${prog##*-}		#                    command
 
-hostname=$(hostname)
-host=${hostname%%.*}	# host名から '.' 以降の除いた名前
+__init_defaults
+__read_config
 
-#  configの読み込み
-#
-if [ -f ${prog_dir}/${progname}.conf ]; then
-	. ${prog_dir}/${progname}.conf
-	configs=${prog_dir}/${progname}.conf
-fi
-
-if [ -f ${prog_dir}/${progname}-${host}.conf ]; then
-	. ${prog_dir}/${progname}-${host}.conf
-	configs="${configs} ${prog_dir}/${progname}-${host}.conf"
-fi
-
-if [ -z "${configs}" ]; then
-	echo "${prog}: No config: ${progname}-${host}.conf nor ${progname}.conf" >&2
-	exit 1
-fi
-
-case ${prog} in
-
-bhyve-id)	__util_id ; exit ;;
-bhyve-stat)	__util_stat "$@"; exit ;;
-
-esac
-
-# check ZFS system
-#
-case ${volroot} in
-/*) zfs=NO ;;
-*)  zfs=YES ;;
-esac
-
-if [ ${prog} = ${progname} ]	# command 名がスクリプトの名前そのものだった場合
-then
-	__make_command_links	# コマンドのシンボリックリンクを作って終了
-	exit
-fi
-
-__config_system
-
+#  -a 
 #  -d デバッグ用 (root権限が必要なコマンドを実行しない)
 #  -t サーバーをバックグラウンドにしない
 #  -c cpu数
@@ -675,8 +682,9 @@ __config_system
 #  -p Grub boot時にPause (オペレータが介在する場合)
 #  -q shtudownの時に何も表示しない
 #
-while getopts 'dfqptsc:m:V:' cmd_arg; do
+while getopts 'adfqptsc:m:V:' cmd_arg; do
 	case "${cmd_arg}" in
+	a)	a_flag=YES ;;
 	d)	do_sudo=echo ;;
 	f)	f_flag=YES ;;
 	t)	con=stdio ; unset do_daemon ;;
@@ -686,10 +694,25 @@ while getopts 'dfqptsc:m:V:' cmd_arg; do
 	q)	q_flag=YES ;;
 	s)	sparse='-s' ;;
 	V)	V_size=${OPTARG} ;;
-	*)	echo "Usage: ${0##*/} [ -t ]" 1>&2; exit 2;;
+	*)	echo "Usage: ${0##*/} " >&2; exit 2;;
 	esac
 done
 shift $((OPTIND - 1))
+
+# check ZFS system
+#
+case ${volroot} in
+/*) zfs=NO ;;
+*)  zfs=YES ;;
+esac
+
+case ${prog} in
+${ebprog_setup})	__make_command_links ; exit ;;
+${ebprog_id})		__util_id ; exit ;;
+${ebprog_stat})		__util_stat ; exit ;;
+esac
+
+__config_system
 
 # コマンドの判断
 #
@@ -708,7 +731,7 @@ resources)	__print_resources	; exit ;;
 rollback)	__rollback_volume "$@"	; exit ;;
 shutdown)	__shutdown_vm		; exit ;;
 snapshot)	__snapshot_volume "$@"	; exit ;;
-*)		echo "*** ${cmd}: Unknown Commmand" 1>&2 ; exit 2 ;;
+*)		echo "*** ${cmd}: Unknown Commmand" >&2 ; exit 2 ;;
 esac
 
 __clean_vm
@@ -717,11 +740,11 @@ __init_systems
 
 cd /tmp		# ワーキングディレクトリを /tmp に変更
 
-if [ x${freebsd} = xYES ]; then
+if [ x${bhyveload} = xYES ]; then
 	if [ x${install} = xYES ]; then
-		__freebsd_install
+		__bhyveload_install
 	else
-		__freebsd_boot
+		__bhyveload_boot
 	fi
 else
 	map=`mktemp /tmp/_bhyve-map-${system}-XXXXXX` # grub-bhyve用mapファイル
