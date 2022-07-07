@@ -40,7 +40,7 @@
 #  OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 #  SUCH DAMAGE.
 #
-#  $Id: easy-bhyve,v 1.114 2022/03/31 06:19:05 minmin Exp $
+#  $Id: easy-bhyve,v 1.116 2022/07/07 04:00:26 minmin Exp $
 #
 
 export PATH=/usr/local/bin:/usr/local/sbin:/bin:/usr/bin:/sbin:/usr/sbin
@@ -78,7 +78,7 @@ __init_defaults () {
 	mem=512M				# VMのデフォルトのメモリサイズ
 
 	snapshot_item='name,volsize,used,refer'		# *-snapshotの表示項目
-	zvol_opt='-o volmode=dev -o volblocksize=4k'	# ZFS Volumeのプロパティ
+	zvol_opt='-o volmode=dev'	# ZFS Volumeのプロパティ
 }
 
 __read_config () {
@@ -111,6 +111,8 @@ __read_config () {
 #  grub_boot_cmd: (optional) grub-bhyveでbootに必要なコマンド列
 #
 __config_system () {
+	local _id _mem _cpu _if0 _hd0 _cd0 _zvol _hdopt _netopt _root _bridge
+
 	eval _id=\$${system}_id
 	if [ -z "${_id}" ]; then
 		echo "*** ${system} is bad name" >&2
