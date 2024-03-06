@@ -3,16 +3,21 @@
 **このドキュメントは現在更新中です。当初と仕様を変更した関係で、古いままの記述や誤った記述があります**
 
 - [easy-bhyveの概要](#easy-bhyveの概要)
+  - [どうしてこんなものを用意したの？](#どうしてこんなものを用意したの)
+  - [easy-bhyveでのid](#easy-bhyveでのid)
+  - [easy-bhyveが作成するコマンド一覧](#easy-bhyveが作成するコマンド一覧)
 - [特徴1: コマンド感覚でVMの起動、停止](#特徴1-コマンド感覚でvmの起動停止)
 - [特徴2: フォアグラウンド・バックグラウンドのVM](#特徴2-フォアグラウンドバックグラウンドのvm)
-- [特徴3: とにかく手軽にVMを起動](#特徴3-とにかく手軽にvmを起動)
 - [特徴4: ZFSとの相性抜群](#特徴4-zfsとの相性抜群)
 - [特徴5: ホスト側の事前設定不要](#特徴5-ホスト側の事前設定不要)
 - [初期設定](#初期設定)
-- [新しいFreeBSD VMの作成](#新しいfreebsd-vmの作成)
-- [Debian、Ubuntu系の新しいVMの作成](#debianubuntu系の新しいvmの作成)
-- [CPUとメモリの設定](#cpuとメモリの設定)
-- [NetBSDの新しいVMの作成](#netbsdの新しいvmの作成)
+  - [各ファイルのパス](#各ファイルのパス)
+  - [VM用のZFS Volume(あるいはファイルシステム)のルートパスの用意](#vm用のzfs-volumeあるいはファイルシステムのルートパスの用意)
+  - [初期設定の変数](#初期設定の変数)
+  - [FreeBSD用VMの設定](#freebsd用vmの設定)
+  - [Debian、Ubuntu系のVMの設定](#debianubuntu系のvmの設定)
+  - [CPUとメモリの設定](#cpuとメモリの設定)
+  - [NetBSDのVMの作成](#netbsdのvmの作成)
 - [インストール用ISOイメージのパスの扱い](#インストール用isoイメージのパスの扱い)
 - [ディスク関連の変数](#ディスク関連の変数)
 - [ネットワーク関連の変数](#ネットワーク関連の変数)
@@ -24,25 +29,39 @@
 
 ## easy-bhyveの概要
 
-easy-bhyveは、BHyVeのVMの起動や終了等をユーザーがコマンド感覚で扱うスクリプトです
+easy-bhyveは、BHyVeのVMの起動や終了等をユーザーがコマンド感覚で扱うシェルスクリプトで、シェルスクリプトの本体と同じディレクトリに設定ファイル(シェル変数を記述)を用意します。
 
-一般的なコマンドであれば、`/usr/local/bin/XXXX`等に配置しますが、easy-bhyveでは本体と設定ファイルを個人の実行ファイルのディレクトリ(多くは`~/bin`)に配置するのが前提になっています。そしてVMの起動停止等の制御コマンドを`~/bin/eb`ディレクトリ下に、それぞれに応じたシンボリックリンクを作成して、それらのシンボリック経由でコマンドを利用します。ユーザーは、`doas`または`sudo`を使ったroot権限が利用できることが必要です。
+一般的なコマンドであれば、`/usr/local/bin/XXXX`等に配置しますが、easy-bhyveでは本体と設定ファイルを個人の実行ファイルのディレクトリ(多くは`~/bin`)に配置するのを前提に作ってあります。そしてVMの起動停止等の制御コマンドをeasy-bhyveを置いたディレクトリ下の`eb`ディレクトリ(つまり`~/bin/eb`、変更可)を作成してそれぞれに応じたシンボリックリンクを作成し、それらのシンボリック経由でコマンドを利用します。ユーザーは、`doas`または`sudo`を使ったroot権限が利用できることが必要です。
 
-easy-bhyveが用意するコマンド名一覧
+### どうしてこんなものを用意したの？
 
-- 標準で用意されるコマンド
-  - VMNAME-install : VMへのインストール
-  - VMNAME-boot : インストール済みVMの起動
-  - VMNAME-ttyboot : consoleをttyで起動 (*-boot -t でも同じ)
-  - VMNAME-console : null-modem経由でコンソールへ接続
-  - VMNAME-resources : リソースの表示
-  - VMNAME-shutdown : VMのシャットダウン
-  - VMNAME-clean : VMの各リソースのクリア
-- ZFS Volume専用のコマンド
-  - VMNAME-snapshot : zvolへのsnapshot
-  - VMNAME-rollback : 最後のsnapshotへのrollback
-  - VMNAME-clone : VMのclone
-  - VMNAME-history : VMのcloneやsnapshotの履歴確認
+### easy-bhyveでのid
+
+easy-bhyveでは各VMに個別のidを割り当てる必要があり、0以上の適当な数字を設定します。VMにtapインターフェースやnmdmデバイスを割り当てる際にidを基準にするため、VM毎に違うものである必要があります。たとえばあるVMのidを**3**にした場合、ネットワークインターフェースは**tap3**、
+nmdmデバイスは **/dev/nmdm3A**、 **/dev/nmdm3B**となります。
+
+### easy-bhyveが作成するコマンド一覧
+
+ZFS、UFS共通コマンド
+
+| コマンド名 | 説明 |
+|------------|------|
+| VMNAME-install | VMへのOSのインストール |
+| VMNAME-boot | インストール済みVMの起動 |
+| VMNAME-ttyboot | コンソールをttyで起動 (*-boot -t でも同じ) |
+| VMNAME-console | NULLモデム経由でコンソールへ接続 |
+| VMNAME-resources | リソースの表示 |
+| VMNAME-shutdown | VMのシャットダウン |
+| VMNAME-clean | VMの各リソースのクリア |
+
+ZFS Volume専用コマンド
+
+| コマンド名 | 説明 |
+|------------|------|
+| VMNAME-snapshot | VM用ZFSボリュームのスナップショットの作成 |
+| VMNAME-rollback | 最後のスナップショットへのロールバック |
+| VMNAME-clone | VMのクローンの作成 |
+| VMNAME-history | VMのクローンやスナップショットの履歴確認 |
 
 ## 特徴1: コマンド感覚でVMの起動、停止
 
@@ -69,21 +88,12 @@ easy-bhyveが用意するコマンド名一覧
   - リブートするとbhyveプロセスそのものが終了した後に立ち上げる術がない
   - root権限を外部に提供するVMサービスが不向きな理由
 
-## 特徴3: とにかく手軽にVMを起動
-
-- DebianやUbuntuはGrub (grub-bhyve) 経由で素直にboot
-  - TIPS: インストール時にLVMを利用しないのが良さそう
-- Grubでboot時にコマンド列を指定する必要があるOSも、コマンド一発でのbootをサポート
-  - OpenBSDとかNetBSDの起動も簡単
-- CentOSはGrubで自動起動できるはずなのだができていない
-  - 現状カーネルがアップデートされると、設定変更が必要
-
 ## 特徴4: ZFSとの相性抜群
 
 - VMのディスクパフォーマンスでもZFS Volumeは有利
 - 特に開発環境用VMでのVMイメージのsnapshot、cloneは強力
 - ZFS環境で無くても一応スクリプトは使える
- 
+
 ## 特徴5: ホスト側の事前設定不要
 
 事前設定不要とは言えdoasやsudoとgrub2-bhyveは事前にインストール & doas(またはsudo)の設定が必要
@@ -100,64 +110,75 @@ easy-bhyveが用意するコマンド名一覧
 
 ## 初期設定
 
+### 各ファイルのパス
+
  | ファイル | パス |
  |----------|------|
  | スクリプト本体 | ~/bin/easy-bhyve |
  | 共通設定ファイル | ~/bin/easy-bhyve.conf |
  | 個別設定ファイル | ~/bin/easy-bhyve-SVRNAME.conf |
 
-VM用のZFS Volume(あるいはファイルシステム)のルートの用意
+- SVRNAMEはbhyveを動かすホスト名のローカルパート (FQDNの先頭の「.」の前まで)
 
-- ZFS zfs create -o mountpoint=none zroot/vm
- 	- VM用のZFS Volume zroot/vm/VMNAME 
-- UFS	mkdir /vm
- 	- VM用のDiskImage	/vm/VMNAME 
+### VM用のZFS Volume(あるいはファイルシステム)のルートパスの用意
+
+ZFSの場合
+
+```command
+*$ zfs create -o mountpoint=none zroot/vm
+```
+
+USFの場合
+
+```command
+$ mkdir /vm
+```
+
 - 名前はこの通りで無くても可  (下記参照)
 
-初期設定の変数
+### 初期設定の変数
 
-- bridge=bridge0
-  - tap IF のデフォルトbridge IF名
-- netif=igb0
-  - デフォルトbridgeの物理IF
-- volroot=zroot/vm
- 	- ZFS Volumeのprefix (volroot=/vm UFS用の DiksImageのprefix)
-- ebdir=eb
- 	- シンボリックリンクを作成するディレクトリ
+| 変数の設定例 | 説明 |
+|--------------|------|
+| bridge=bridge0 | tapインターフェースを割り当てるブリッジ名 |
+| netif=igb0 | ブリッジを割り当てる物理IF |
+| volroot=zroot/vm | ZFS Volumeのprefix (UFSの場合 /vm 等) |
+| ebdir=eb | シンボリックリンクを作成するディレクトリでeasy-bhyveがあるディレクトリ下に作成される|
 
-## 新しいFreeBSD VMの作成
+### FreeBSD用VMの設定
 
-- IDとVMの名前を決める
-	- ID			1
-	- VM名		fbsd0
-- 設定する変数
-	- fbsd0_id=1
-	- fbsd0_cd0=/isopath/FreeBSD-11.1-RELEASE-amd64-disc1.iso
-	- fbsd0_freebsd=YES	(FreeBSDはgrub-bhyve不要のため)
+IDを 1、VM名をfreebsd0とした場合
 
-## Debian、Ubuntu系の新しいVMの作成
+| 変数の設定例 | 説明 |
+|--------------|------|
+| freebsd0_id=1 | id の設定 |
+| freebsd0_cd0=/isopath/FreeBSD-14.0-RELEASE-amd64-disc1.iso | インストール用ISOイメージのパス |
+| freebsd0_freebsd=YES | FreeBSDの場合bhyve-loadを使うため(grub2-bhyveを使わない) |
 
-- IDとVMの名前を決める
-	- ID			2
-	- VM名		deb0
-- 設定する変数
-  - deb0_id=2
-  - deb0_cd0=/isopath/debian-9.2.1-amd64-netinst.iso
+- ディスクイメージは`freebsd0_hd0`で指定しない場合、デフォルトの`zroot/vm/freebsd0`となる
 
-## CPUとメモリの設定
+### Debian、Ubuntu系のVMの設定
 
-- デフォルトリソース
-  - cpu=1			VMのデフォルトのCPU数
-  - mem=256M		VMのデフォルトのメモリ
-    - スクリプト内で定義
-- 個別に値を設定する場合
-  - VMNAME_cpu=4
-  - VMNAME_mem=2048M
-  - 具体例
-    - deb0_cpu=2
-    - deb0_mem=1024M
+| 変数の設定例 | 説明 |
+|--------------|------|
+| debian0_id=2 | id の設定 |
+| deboam0_cd0=/isopath/debian-12.4.0-amd64-netinst.iso | DebianのインストールISOのパス |
 
-## NetBSDの新しいVMの作成
+### CPUとメモリの設定
+
+| 変数の設定例 | 説明 |
+|--------------|------|
+| cpu=1 | VMのデフォルトのCPU数 |
+| mem=256M | VMのデフォルトの割当メモリ |
+
+個別に値を設定する場合はVMNAME_で名前を指定する。
+
+| 変数の設定例 | 説明 |
+|--------------|------|
+| freebsd0_cpu=2 | VMのCPU数 |
+| freebsd0_mem=512M | VMの割当メモリ |
+
+### NetBSDのVMの作成
 
 - IDとVMの名前を決める
   - ID			3
@@ -175,8 +196,8 @@ VM用のZFS Volume(あるいはファイルシステム)のルートの用意
   - iso_path=/isofile_dir/ISO
   - freebsd0_cd0=${iso_path}/FreeBSD-11.1-RELEASE-amd64-disc1.iso
   - debian0_cd0=${iso_path}/debian-9.1.0-amd64-netinst.iso
-- インストールが不要なら、ISOイメージの設定は不要
-  - 既存VMをクローンした場合とか
+- 既存VMをクローンした場合は、インストールが不要となるためISOイメージの設定は不要
+
 
 ## ディスク関連の変数 
 
