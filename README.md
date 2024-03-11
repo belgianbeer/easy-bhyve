@@ -3,20 +3,15 @@
 **このドキュメントは現在更新中です。当初と仕様を変更した関係で、古いままの記述や誤った記述があります**
 
 - [easy-bhyveの概要](#easy-bhyveの概要)
-  - [どうしてこんなものを用意したの？](#どうしてこんなものを用意したの)
-  - [easy-bhyveでのid](#easy-bhyveでのid)
   - [easy-bhyveが作成するコマンド一覧](#easy-bhyveが作成するコマンド一覧)
-- [特徴1: コマンド感覚でVMの起動、停止](#特徴1-コマンド感覚でvmの起動停止)
-- [特徴2: フォアグラウンド・バックグラウンドのVM](#特徴2-フォアグラウンドバックグラウンドのvm)
-- [特徴4: ZFSとの相性抜群](#特徴4-zfsとの相性抜群)
-- [特徴5: ホスト側の事前設定不要](#特徴5-ホスト側の事前設定不要)
 - [初期設定](#初期設定)
   - [各ファイルのパス](#各ファイルのパス)
+  - [easy-bhyveでのid](#easy-bhyveでのid)
   - [VM用のZFS Volume(あるいはファイルシステム)のルートパスの用意](#vm用のzfs-volumeあるいはファイルシステムのルートパスの用意)
-  - [初期設定の変数](#初期設定の変数)
+  - [ホスト側の変数](#ホスト側の変数)
+  - [CPUとメモリのデフォルト](#cpuとメモリのデフォルト)
   - [FreeBSD用VMの設定](#freebsd用vmの設定)
   - [Debian、Ubuntu系のVMの設定](#debianubuntu系のvmの設定)
-  - [CPUとメモリの設定](#cpuとメモリの設定)
   - [NetBSDのVMの作成](#netbsdのvmの作成)
 - [インストール用ISOイメージのパスの扱い](#インストール用isoイメージのパスの扱い)
 - [ディスク関連の変数](#ディスク関連の変数)
@@ -33,12 +28,93 @@ easy-bhyveは、BHyVeのVMの起動や終了等をユーザーがコマンド感
 
 一般的なコマンドであれば、`/usr/local/bin/XXXX`等に配置しますが、easy-bhyveでは本体と設定ファイルを個人の実行ファイルのディレクトリ(多くは`~/bin`)に配置するのを前提に作ってあります。そしてVMの起動停止等の制御コマンドをeasy-bhyveを置いたディレクトリ下の`eb`ディレクトリ(つまり`~/bin/eb`、変更可)を作成してそれぞれに応じたシンボリックリンクを作成し、それらのシンボリック経由でコマンドを利用します。ユーザーは、`doas`または`sudo`を使ったroot権限が利用できることが必要です。
 
-### どうしてこんなものを用意したの？
+文章で表現するより、次のeasy-bhyveの初期設定の例を見ればピンとくると思います。
 
-### easy-bhyveでのid
+$HOME/binディレクトリ内の内容の確認と設定ファイルの内容
 
-easy-bhyveでは各VMに個別のidを割り当てる必要があり、0以上の適当な数字を設定します。VMにtapインターフェースやnmdmデバイスを割り当てる際にidを基準にするため、VM毎に違うものである必要があります。たとえばあるVMのidを**3**にした場合、ネットワークインターフェースは**tap3**、
-nmdmデバイスは **/dev/nmdm3A**、 **/dev/nmdm3B**となります。
+```command
+$ ls -l ~/bin
+total 17
+-rwxr-xr-x  1 minmin  minmin  17779 Mar 11 07:14 easy-bhyve
+-rw-r--r--  1 minmin  minmin    597 Mar 11 07:20 easy-bhyve.conf
+$ cat bin/easy-bhyve.conf
+#
+#  default リソース
+#
+bridge=bridge0          # デフォルトのbridge if
+netif=em0               # bridge if を使う IF名
+volroot=zroot/vm        # VM用ZFS Volumeのprefix
+
+# ISO Images
+iso_path=/archive/ISO   # ISO image のあるPathのprefix
+iso_freebsd14=${iso_path}/FreeBSD/FreeBSD-14.0-RELEASE-amd64-disc1.iso
+iso_debian12=${iso_path}/Debian/debian-12.4.0-amd64-netinst.iso
+
+# FreeBSD
+freebsdvm_id=0
+freebsdvm_cpu=2
+freebsdvm_mem=256m
+freebsdvm_freebsd=YES
+freebsdvm_cd0=${iso_freebsd14}
+
+# Debian GNU/Linux
+debianvm_id=1
+debianvm_cpu=2
+debianvm_mem=256m
+debianvm_cd0=${iso_debian12}
+debianvm_grub_root=msdos1
+$
+```
+
+easy-bhyveのイニシャライズ
+
+```command
+$ easy-bhyve setup
+$
+```
+
+~/binディレクトリ下を確認すると、ebディレクトリが作成されて多数のシンボリックリンクが作られているのがわかります。
+
+```command
+$ ls -lR ~/bin
+total 26
+-rwxr-xr-x  1 minmin  minmin  17779 Mar 11 07:14 easy-bhyve
+-rw-r--r--  1 minmin  minmin    597 Mar 11 07:20 easy-bhyve.conf
+drwxr-xr-x  2 minmin  minmin     25 Mar 11 07:26 eb
+
+bin/eb:
+total 12
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 debianvm-boot -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 debianvm-clean -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 debianvm-clone -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 debianvm-console -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 debianvm-history -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 debianvm-install -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 debianvm-resources -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 debianvm-rollback -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 debianvm-shutdown -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 debianvm-snapshot -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 debianvm-ttyboot -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  18 Mar 11 07:26 easy-bhyve.conf -> ../easy-bhyve.conf
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 freebsdvm-boot -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 freebsdvm-clean -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 freebsdvm-clone -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 freebsdvm-console -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 freebsdvm-history -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 freebsdvm-install -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 freebsdvm-resources -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 freebsdvm-rollback -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 freebsdvm-shutdown -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 freebsdvm-snapshot -> ../easy-bhyve
+lrwxr-xr-x  1 minmin  minmin  13 Mar 11 07:26 freebsdvm-ttyboot -> ../easy-bhyve
+$
+```
+
+初期化後、例えばfreebsdvmのインストールを行う場合、次のコマンドを実行します。
+
+```command
+$ ~/bin/eb/freebsdvm-install
+````
 
 ### easy-bhyveが作成するコマンド一覧
 
@@ -63,62 +139,23 @@ ZFS Volume専用コマンド
 | VMNAME-clone | VMのクローンの作成 |
 | VMNAME-history | VMのクローンやスナップショットの履歴確認 |
 
-## 特徴1: コマンド感覚でVMの起動、停止
-
-- 新しいVMを作るとき、最小で変数を2個設定するだけ
-- 実験用途向けのVM運用を前提にVMの起動と停止をユーザーがコマンド感覚でホイホイできる
-  - 本当の理由 : ホストのパフォーマンス(CPU、メモリ)に影響するので、VMは常時動かしたく無いけど必要な時にすぐ起動したい
-- 特権が必要なオペレーションについては内部で doas または sudo を使用
-- スクリプト本体を[VMNAME]-[コマンド名]のシンボリックリンクで利用する
-  - シンボリックリンクも自動作成
-- VMサービスとして root権限を外部に提供する用途には不向き (後述)
-
-## 特徴2: フォアグラウンド・バックグラウンドのVM
-
-フォアグラウンド
-
-- コンソール操作が必要な場合とかVM側の初期設定とか
-
-バックグラウンド
-
-- daemon(8)を利用し独立プロセス化
-  - コントロールttyが残らないのでpsで見てスッキリ
-  - コンソールへの接続は nmdm(4) 経由
-- 副作用としてVM内部からのリブート操作が不可能
-  - リブートするとbhyveプロセスそのものが終了した後に立ち上げる術がない
-  - root権限を外部に提供するVMサービスが不向きな理由
-
-## 特徴4: ZFSとの相性抜群
-
-- VMのディスクパフォーマンスでもZFS Volumeは有利
-- 特に開発環境用VMでのVMイメージのsnapshot、cloneは強力
-- ZFS環境で無くても一応スクリプトは使える
-
-## 特徴5: ホスト側の事前設定不要
-
-事前設定不要とは言えdoasやsudoとgrub2-bhyveは事前にインストール & doas(またはsudo)の設定が必要
-
-- pkg install doas(sudo) grub2-bhyve
-
-必要なkernel moduleは実行時にロードする
-
-- vmm.ko とか if_tap.koとか if_bridge.ko等
-  - 終了しても解放しない(さすがにそこまでしなくて良いはず)
-- bridge if や tap if は必要に応じて作成
-  - 一度作ったbridge ifはVMをクリアしても削除しない
-- tap ifはvmのクリア時に削除
-
 ## 初期設定
 
 ### 各ファイルのパス
 
- | ファイル | パス |
- |----------|------|
- | スクリプト本体 | ~/bin/easy-bhyve |
- | 共通設定ファイル | ~/bin/easy-bhyve.conf |
- | 個別設定ファイル | ~/bin/easy-bhyve-SVRNAME.conf |
+easy-bhyveを利用する場合、~/binディレクトリに次のファイルを用意します。もちろん~/binではないディレクトリに配置しても問題ありませんが、ユーザー権限で書き込めることが必要です。
 
-- SVRNAMEはbhyveを動かすホスト名のローカルパート (FQDNの先頭の「.」の前まで)
+| ファイル | パス |
+|----------|------|
+| easy-bhyve本体 | ~/bin/easy-bhyve |
+| 共通設定ファイル | ~/bin/easy-bhyve.conf |
+| 個別設定ファイル | ~/bin/easy-bhyve-SVRNAME.conf |
+
+設定ファイルは、共通設定ファイル、個別設定ファイルのいずれかが必要です。両方ある場合は最初に共通設定ファイルを読み込み、次に個別設定ファイルを読み込みます。ここでSVRNAMEはbhyveを動かすホスト名のローカルパート (FQDNの先頭の「.」の前まで)です。
+
+### easy-bhyveでのid
+
+easy-bhyveでは各VMに個別のidを割り当てる必要があり、0以上の適当な数字を設定します。idを基準にVMのtapインターフェースやnmdmデバイスを割り当てるため、VM毎に違うものである必要があります。たとえばあるVMのidを**3**にした場合、ネットワークインターフェースは**tap3**、nmdmデバイスは **/dev/nmdm3A**、 **/dev/nmdm3B**となります。
 
 ### VM用のZFS Volume(あるいはファイルシステム)のルートパスの用意
 
@@ -134,20 +171,29 @@ USFの場合
 $ mkdir /vm
 ```
 
-- 名前はこの通りで無くても可  (下記参照)
+ルートパスは変数で設定するため、任意のものが利用できます(後述)。
 
-### 初期設定の変数
+### ホスト側の変数
+
+easy-bhyveはシェルスクリプトで、設定はシェル変数を設定します。シェル変数はホスト側の設定と、VM毎の設定の2種類があります。
 
 | 変数の設定例 | 説明 |
 |--------------|------|
-| bridge=bridge0 | tapインターフェースを割り当てるブリッジ名 |
+| bridge=bridge0 | tapインターフェースを割り当てホスト側のブリッジ名 |
 | netif=igb0 | ブリッジを割り当てる物理IF |
 | volroot=zroot/vm | ZFS Volumeのprefix (UFSの場合 /vm 等) |
 | ebdir=eb | シンボリックリンクを作成するディレクトリでeasy-bhyveがあるディレクトリ下に作成される|
 
+### CPUとメモリのデフォルト
+
+| 変数の設定例 | 説明 |
+|--------------|------|
+| cpu=1 | VMのデフォルトのCPU数 |
+| mem=256M | VMのデフォルトの割当メモリ |
+
 ### FreeBSD用VMの設定
 
-IDを 1、VM名をfreebsd0とした場合
+IDを 1、VM名をfreebsd0とした場合の設定です。
 
 | 変数の設定例 | 説明 |
 |--------------|------|
@@ -155,39 +201,33 @@ IDを 1、VM名をfreebsd0とした場合
 | freebsd0_cd0=/isopath/FreeBSD-14.0-RELEASE-amd64-disc1.iso | インストール用ISOイメージのパス |
 | freebsd0_freebsd=YES | FreeBSDの場合bhyve-loadを使うため(grub2-bhyveを使わない) |
 
-- ディスクイメージは`freebsd0_hd0`で指定しない場合、デフォルトの`zroot/vm/freebsd0`となる
+個別にCPUやメモリ量を設定する場合はVMNAME_で名前を指定します。
+
+| 変数の設定例 | 説明 |
+|--------------|------|
+| freebsd0_cpu=2 | freebsd0のCPU数 |
+| freebsd0_mem=512M | freebsd0に割当るメモリ量 |
+
+デフォルトの`zroot/vm/freebsd0`となるので設定する必要はありません。
+個別に指定する場合は、`freebsd0_hd0`の変数で指定します。
 
 ### Debian、Ubuntu系のVMの設定
 
 | 変数の設定例 | 説明 |
 |--------------|------|
 | debian0_id=2 | id の設定 |
-| deboam0_cd0=/isopath/debian-12.4.0-amd64-netinst.iso | DebianのインストールISOのパス |
-
-### CPUとメモリの設定
-
-| 変数の設定例 | 説明 |
-|--------------|------|
-| cpu=1 | VMのデフォルトのCPU数 |
-| mem=256M | VMのデフォルトの割当メモリ |
-
-個別に値を設定する場合はVMNAME_で名前を指定する。
-
-| 変数の設定例 | 説明 |
-|--------------|------|
-| freebsd0_cpu=2 | VMのCPU数 |
-| freebsd0_mem=512M | VMの割当メモリ |
+| deboam0_cd0=/isopath/debian-12.4.0-amd64-netinst.iso | Debianのインストール用ISOのパス |
 
 ### NetBSDのVMの作成
 
-- IDとVMの名前を決める
-  - ID			3
-  - VM名		nbsd0
-- 設定する変数
-  - nbsd0_id=3
-  - nbsd0_cd0=/isopath/NetBSD-7.0.1-amd64.iso
-  - nbsd0_grub_inst="knetbsd -h -r cd0a (cd0)/netbsd"
-  - nbsd0_grub_boot="knetbsd -h -r /dev/rld0a (hd0,netbsd1)/netbsd"
+IDを 3、VM名をnbsd0とした場合の設定です。
+
+| 変数の設定例 | 説明 |
+|--------------|------|
+| nbsd0_id=3 | id の設定 |
+| nbsd0_cd0=/isopath/NetBSD-7.0.1-amd64.iso | NetBSDのインストール用ISOファイル |
+| nbsd0_grub_inst="knetbsd -h -r cd0a (cd0)/netbsd" | grub2-bhyveでNetBSDを起動するコマンド |
+| nbsd0_grub_boot="knetbsd -h -r /dev/rld0a (hd0,netbsd1)/netbsd" | grub2-bhyveでNetBSDを起動するコマンド |
     - _grub_inst と _grub_boot はOS毎に調べる必要あり(後述)
 
 ## インストール用ISOイメージのパスの扱い
@@ -196,8 +236,7 @@ IDを 1、VM名をfreebsd0とした場合
   - iso_path=/isofile_dir/ISO
   - freebsd0_cd0=${iso_path}/FreeBSD-11.1-RELEASE-amd64-disc1.iso
   - debian0_cd0=${iso_path}/debian-9.1.0-amd64-netinst.iso
-- 既存VMをクローンした場合は、インストールが不要となるためISOイメージの設定は不要
-
+- 既存VMをクローンしたVMを作った場合は、インストールが不要となるためISOイメージの設定は不要です。
 
 ## ディスク関連の変数 
 
