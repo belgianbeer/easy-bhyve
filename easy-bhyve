@@ -9,7 +9,7 @@
 #   システム名-console		null-modem経由でコンソールへ接続
 #   システム名-resources	リソースの表示
 #   システム名-shutdown		VMMのシャットダウン
-#   システム名-clean		VMMのクリア
+#   システム名-clear		VMMのクリア
 #  ZFS専用のコマンド
 #   システム名-snapshot	word	zvolへのsnapshot
 #   システム名-rollback		最後のsnapshotへのrollback
@@ -40,7 +40,7 @@
 #  OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 #  SUCH DAMAGE.
 #
-#  $Id: easy-bhyve,v 1.121 2024/04/02 22:33:11 minmin Exp $
+#  $Id: easy-bhyve,v 1.126 2024/08/07 05:46:54 minmin Exp $
 #
 
 export PATH=/usr/local/bin:/usr/local/sbin:/bin:/usr/bin:/sbin:/usr/sbin
@@ -68,7 +68,7 @@ __init_defaults () {
 	fi
 
 	# コマンド一覧
-	commands=' boot ttyboot clean console install resources shutdown '
+	commands=' boot ttyboot clear console install resources shutdown '
 	commands_zfs=' clone history snapshot rollback '
 
 	#  デフォルトリソース
@@ -146,9 +146,7 @@ __config_system () {
 	eval grub_inst_cmd=\$${system}_grub_install
 	eval grub_boot_cmd=\$${system}_grub_bootcmd
 
-	if [ -z "${grub_boot_part}" -a -z "${grub_inst_cmd}" -a -z "${grub_boot_cmd}" ]; then
-		bhyveload=YES
-	fi
+	eval is_freebsd=\$${system}_freebsd
 
 	_id=0
 	eval _netopt=\$${system}_if${_id}
@@ -178,7 +176,7 @@ __config_system () {
 __make_command_links () {
 	local _systems _sys _cmd
 
-	_systems=$(sed -n '/^[[:space:]]*\([[:alpha:]][[:alpha:][:digit:]]*\)_id=[[:digit:]][[:digit:]]*/s//\1/p' ${configs})
+	_systems=$(sed -n '/^[[:space:]]*\([[:alpha:]][[:alpha:][:digit:]]*\)_id=[[:digit:]][[:digit:]]*.*/s//\1/p' ${configs})
 
 	if [ x"${_systems}" = x ]
 	then
@@ -356,7 +354,7 @@ __destroy_tapif () {
 	fi
 }
 
-__clean_vm () {
+__clear_vm () {
 	local _id _optif _bridge
 
 	if [ ${do_sudo} != echo ] && pgrep -qxf "bhyve: ${system}"
@@ -365,8 +363,7 @@ __clean_vm () {
 		exit 2
 	fi
 
-	if [ -e /dev/vmm/${system} ] ;
-	then
+	if [ -e /dev/vmm/${system} ]; then
 		${do_sudo} bhyvectl --destroy --vm=${system} # VMのクリア
 	fi
 
@@ -389,7 +386,7 @@ __shutdown_vm () {
 		exit 2
 	fi
 
-	if [ x${f_flag} = xYES ] ; then
+	if [ x${f_flag} = xYES ]; then
 		${do_sudo} kill -HUP ${_pid}
 	else
 		${do_sudo} kill ${_pid}
@@ -411,7 +408,7 @@ __shutdown_vm () {
 			test ${q_flag} || echo -n '.' >&2
 		done
 	fi
-	__clean_vm
+	__clear_vm
 	test ${q_flag} || echo " Done." >&2
 }
 
@@ -605,7 +602,9 @@ __grub_boot () {
 
 	# Boot用の Grubの起動
 	#
-	if [ x"${grub_boot_cmd}" = x -o x"${p_flag}" = xYES ]; then
+	if [ -n "${p_flag}" ]; then
+		${do_sudo} grub-bhyve -m ${map} -M ${mem} ${system}
+	elif [ -z "${grub_boot_cmd}" ]; then
 		${do_sudo} grub-bhyve -m ${map} -r hd0,${grub_boot_part} -M ${mem} ${system}
 	else
 		${do_sudo} grub-bhyve -m ${map} -r hd0,${grub_boot_part} -M ${mem} ${system} <<- EOT
@@ -641,7 +640,7 @@ __util_list () {
 
 __get_mem_and_cpu () {
 	(
-		eval $(${prog_dir}/${1}-resources)
+		eval $(${prog_dir}/${ebdir}/${1}-resources)
 		echo $cpu $mem
 	)
 }
@@ -727,7 +726,7 @@ install)	con=stdio install=YES cdopt="-s 4:0,ahci-cd,${cd0}"
 		unset do_daemon ;;
 
 console)	__connect_console	; exit ;;
-clean)		__clean_vm		; exit ;;
+clear)		__clear_vm		; exit ;;
 clone)		__clone_volume "$@"	; exit ;;
 history)	__history_volume ${system} ; exit ;;
 resources)	__print_resources	; exit ;;
@@ -737,13 +736,13 @@ snapshot)	__snapshot_volume "$@"	; exit ;;
 *)		echo "*** ${cmd}: Unknown Commmand" >&2 ; exit 2 ;;
 esac
 
-__clean_vm
+__clear_vm
 __check_resouces
 __init_systems
 
 cd /tmp		# ワーキングディレクトリを /tmp に変更
 
-if [ x${bhyveload} = xYES ]; then
+if [ x${is_freebsd} = xYES ]; then
 	if [ x${install} = xYES ]; then
 		__bhyveload_install
 	else
