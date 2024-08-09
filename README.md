@@ -199,7 +199,7 @@ $ ls bin
 easy-bhyve      easy-bhyve.conf
 $ easy-bhyve list
 0       freebsd0
-1       debian1$
+1       debian1
 $
 ```
 
@@ -228,7 +228,7 @@ $
 **VMNAME-resources**を実行して、各リソースの設定を確認します。
 
 ```command
-$ bin/eb/freebsd0-resources
+$ ~/bin/eb/freebsd0-resources
 host=brunehaut
 system=freebsd0
 con=/dev/nmdm0A
@@ -248,7 +248,7 @@ $
 リソースを確認できたら、**VMNAME-resource**コマンドを使ってディスクイメージを作成します。
 
 ```command
-$ bin/eb/freebsd0-resources -V 30g -s
+$ ~/bin/eb/freebsd0-resources -V 30g -s
 $
 ```
 
@@ -310,9 +310,27 @@ grub2-bhyveでMBR形式のディスクパーティションは、順にmsdos1、
 | ubuntu0_grub_bootpart=gpt2 | VMのディスクイメージの起動パーティション |
 | ubuntu0_cd0=/ISOFILEPATH/ubuntu-24.04-live-server-amd64.iso | Ubuntuのインストール用ISOファイルのパス |
 
-起動パーティションがどれであるかは、実際にはOSのインストール後でないとわからないこともあります。そのためeasy-bhyveでは、**VMNAME-boot**コマンドで -p オプションを指定することで、一旦grub2-bhyveのコマンドプロンプトで起動を中断できます。あらためてgrub2-bhyve のlsコマンドを使って、パーティションの内容を確認し、VMNAME_grub_bootpart変数を設定します。
+起動パーティションがどれであるかは、実際にはOSのインストール後でないとわからないこともあります。そのためeasy-bhyveでは、**VMNAME-boot**コマンドで **-p**オプションを指定することで、一旦grub2-bhyveのコマンドプロンプトで起動を中断できます。あらためてgrub2-bhyve のlsコマンドを使って、パーティションの内容を確認し、VMNAME_grub_bootpart変数を設定します。次は 実際にVMNAME-bootで **-p**オプションを指定してgrubのコマンドプロンプトで `ls`コマンドでインストールしたファイルシステムの内容を確認している例です。
 
-★★★
+```text
+                             GNU GRUB  version 2.00
+
+   Minimal BASH-like line editing is supported. For the first word, TAB
+   lists possible command completions. Anywhere else TAB lists possible
+   device or file completions.
+
+
+grub> ls
+(hd0) (hd0,msdos5) (hd0,msdos1) (host)
+grub> ls (hd0,msdos1)
+        Partition hd0,msdos1: Filesystem type ext* - Last modification time
+2024-06-18 13:10:50 Tuesday, UUID 8defe964-1517-428d-b7cd-c9c7ab61520c -
+Partition start at 2048 - Total size 60911616 sectors
+grub> ls (hd0,msdos1)/
+lost+found/ etc/ media/ vmlinuz.old var/ usr/ lib lib64 sbin bin boot/ dev/ hom
+e/ proc/ root/ run/ sys/ tmp/ mnt/ srv/ opt/ initrd.img.old vmlinuz initrd.img
+grub> exit
+```
 
 ### NetBSDのVMの作成
 
@@ -335,12 +353,41 @@ ZFSではスナップショットとロールバック、クローンを自由�
 
 **VMNAME-snapshot** は指定した引数の空白を “_”に置換し「日時分」を加えたsnapshotを作成します。たとえば`~/bin/eb/freebsd0-snapshot hoge hoge`を実行すると`zroot/vm/freebsd0@_202407121353-hoge_hoge`という名前のスナップショットが作成されます。また引数を指定ない場合は、該当Volumeのスナップショットの一覧を表示します。
 
+```text
+$ ~/bin/eb/debian10-snapshot
+NAME                                           VOLSIZE   USED  REFER
+zroot/vm/debian10                                  30G  4.31G  3.17G
+zroot/vm/debian10@_202206150938-10.12_updated      30G   477M  2.75G
+zroot/vm/debian10@_202307311452-backup             30G   236M  3.07G
+```
+
 **VMNAME-rollback**は、指定したsnapshot名(@の後ろ部分)まで ZFSのロールバックを行います。
-引数を指定しない場合は、最新のスナップショットまでロールバックします。
+引数を指定しない場合は、最新のスナップショットまでロールバックします。該当のVMが終了した状態で利用します。
 
 **VMNAME-clone**はディスクイメージにsnapshotを作成し、引数名でイメージのクローンを作成します。同じ設定のVMを新たに作る場合等に利用します。
 
+```text
+$ ~/bin/eb/debian10-clone
+Usage: easy-bhyve [snapshot] New_VM [New_VM]
+$ ~/bin/eb/debian10-clone deb10test
+NAME                                                    VOLSIZE   USED  REFER
+zroot/vm/deb10test                                          30G     1K  3.17G
+zroot/vm/deb10test@_202408091502-debian10_202408091502      30G     0B  3.17G
+$
+```
+
 **VMNAME-history**は**VMNAME-clone**で作成したイメージの履歴を表示します。
+
+```text
+$ ~/bin/eb/deb10test-history
+zroot/vm/debian10
+zroot/vm/debian10@_202206150938-10.12_updated
+zroot/vm/debian10@_202307311452-backup
+zroot/vm/debian10@_202408091502-clone_base
+zroot/vm/deb10test
+zroot/vm/deb10test@_202408091502-debian10_202408091502
+$
+```
 
 ## easy-bhyveコマンド
 
@@ -375,7 +422,7 @@ $
 このような場合は、debian10に割り当てたネットワークインターフェースも残ったままの状態となります。これらのリソースを開放する場合は**VMNAME-clear**コマンドを使います。
 
 ```text
-$ bin/eb/debian10-clear
+$ ~/bin/eb/debian10-clear
 $
 ```
 
