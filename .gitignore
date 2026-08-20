@@ -1,8 +1,6 @@
 .cvsignore
 CVS
-easy-bhyve-brunehaut.conf
-easy-bhyve-fs.conf
-easy-bhyve-sh.conf
+*.conf
 hoge*
 fuga*
 temp*
